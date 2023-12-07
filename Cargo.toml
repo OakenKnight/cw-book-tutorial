@@ -16,8 +16,8 @@ cw-storage-plus = "1.2.0"
 thiserror = "1"
 schemars = "0.8.1"
 cw-utils = "1.0.3"
+cosmwasm-schema = { version = "1.0.0" }
 
 [dev-dependencies]
 cw-multi-test = "0.19.0"
-cosmwasm-schema = { version = "1.0.0" }
 

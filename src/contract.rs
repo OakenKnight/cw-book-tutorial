@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use cosmwasm_std::{entry_point, Binary, Deps, DepsMut, Empty, Env, MessageInfo, Response, StdResult, to_json_binary};
 use crate::error::ContractError;
-use crate::messages::{QueryMsg, GreetResp, InstantiateMsg, AdminListResp, ExecuteMsg};
+use crate::messages::{QueryMsg, GreetResp, InstantiateMsg, AdminsListResp, ExecuteMsg};
 use crate::state::{ADMINS, DONATION_DENOM};
 
 pub fn execute(
@@ -23,7 +23,7 @@ pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<Binary> {
 
     match msg{
         Greet {} => to_json_binary(&query::greet()?),
-        AdminList {} => to_json_binary(&query::admin_list(deps)?)
+        AdminsList {} => to_json_binary(&query::admin_list(deps)?)
     }
 }
 pub fn instantiate(deps: DepsMut, _env: Env, _info: MessageInfo, msg: InstantiateMsg) -> StdResult<Response> {
@@ -54,8 +54,6 @@ mod exec {
         let res = donation % (admins.len() as u128);
 
         //FIXME: handle case of 2 admins sharing 51 tokens
-
-
         let mut messages : Vec<_> = admins.into_iter().map(|admin| BankMsg::Send 
             {   to_address: admin.into_string(), 
                 amount: coins(donation_per_admin, &denom)
@@ -111,9 +109,9 @@ mod query{
         };
         Ok(resp)
     }
-    pub fn admin_list(deps: Deps)  -> StdResult<AdminListResp>{
+    pub fn admin_list(deps: Deps)  -> StdResult<AdminsListResp>{
         let admins = ADMINS.load(deps.storage)?;
-        Ok(AdminListResp { admins: admins.into_iter().collect() })
+        Ok(AdminsListResp { admins: admins.into_iter().collect() })
     }
 }
 
@@ -335,12 +333,12 @@ mod tests {
             &[], "Contract 1", 
             None)
             .unwrap();
-        let resp : AdminListResp = app
+        let resp : AdminsListResp = app
                                     .wrap()
-                                    .query_wasm_smart(addr, &QueryMsg::AdminList {  })
+                                    .query_wasm_smart(addr, &QueryMsg::AdminsList {  })
                                     .unwrap();
 
-        assert_eq!(resp, AdminListResp{admins: vec![]});
+        assert_eq!(resp, AdminsListResp{admins: vec![]});
         
 
         let addr = app.instantiate_contract(
@@ -350,7 +348,7 @@ mod tests {
               &[],
                "Contract 1",
                 None).unwrap();
-        let resp : AdminListResp = app.wrap().query_wasm_smart(addr, &QueryMsg::AdminList {  }).unwrap();
+        let resp : AdminsListResp = app.wrap().query_wasm_smart(addr, &QueryMsg::AdminsList {  }).unwrap();
         let resp : HashSet<Addr> = resp.admins.into_iter().collect();
 
         assert_eq!(resp, vec![Addr::unchecked("admin2"), Addr::unchecked("admin1"),Addr::unchecked("admin3")].into_iter().collect())
@@ -389,7 +387,7 @@ mod tests {
             &ExecuteMsg::AddMembers { admins: vec!["admin2".to_owned()] },
             &[])
             .unwrap();
-        let query_resp : AdminListResp = app.wrap().query_wasm_smart(addr, &QueryMsg::AdminList {  }).unwrap();
+        let query_resp : AdminsListResp = app.wrap().query_wasm_smart(addr, &QueryMsg::AdminsList {  }).unwrap();
         let query_resp : HashSet<Addr> = query_resp.admins.into_iter().collect();
 
         assert_eq!(query_resp, vec![Addr::unchecked("admin1"), Addr::unchecked("admin2")].into_iter().collect());
