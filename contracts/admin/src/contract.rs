@@ -1,20 +1,38 @@
 use std::collections::HashSet;
 
-use cosmwasm_std::{entry_point, Binary, Deps, DepsMut, Empty, Env, MessageInfo, Response, StdResult, to_json_binary};
+use cosmwasm_std::{Binary, Deps, DepsMut, Empty, Env, MessageInfo, Response, StdResult, to_json_binary};
 use crate::error::ContractError;
-use crate::messages::{QueryMsg, GreetResp, InstantiateMsg, AdminsListResp, ExecuteMsg};
+use crate::messages::{QueryMsg, InstantiateMsg, AdminsListResp, ExecuteMsg};
 use crate::state::{ADMINS, DONATION_DENOM};
 
+
+pub fn instantiate(deps: DepsMut, env: Env, _info: MessageInfo, msg: InstantiateMsg) -> StdResult<Response> {
+
+    for admin in msg.admins{ 
+        let admin = deps.api.addr_validate(&admin)?;
+        ADMINS.save(deps.storage, &admin, &env.block.time)?;
+    }
+    
+    DONATION_DENOM.save(deps.storage, &msg.donation_denom)?;
+    Ok(Response::new())
+}
+pub fn leave(deps: DepsMut, info: MessageInfo) -> StdResult<Response> {
+    ADMINS.remove(deps.storage, &info.sender);
+    let res = Response::new()
+        .add_attribute("action", "leave")
+        .add_attribute("sender", info.sender);
+    Ok(res)
+}
 pub fn execute(
     deps: DepsMut,
-    _env :Env,
+    env :Env,
     info:MessageInfo,
     msg: ExecuteMsg ) -> Result<Response, ContractError> {
         use ExecuteMsg::*;
         match msg {
-            AddMembers {admins} => exec::add_members(deps, info, admins),
+            AddMembers {admins} => exec::add_members(deps, env, info, admins),
             Leave {} => exec::leave(deps, info).map_err(Into::into),
-            Donate {  } => exec::denom(deps, info)
+            Donate {  } => exec::donate(deps, info)
         }
 }
 
@@ -22,22 +40,16 @@ pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<Binary> {
     use QueryMsg::*;
 
     match msg{
-        Greet {} => to_json_binary(&query::greet()?),
-        AdminsList {} => to_json_binary(&query::admin_list(deps)?)
+        AdminsList {} => to_json_binary(&query::admin_list(deps)?),
+        JoinTime { admin } => to_json_binary(&query::join_time(deps, admin)?),
     }
 }
-pub fn instantiate(deps: DepsMut, _env: Env, _info: MessageInfo, msg: InstantiateMsg) -> StdResult<Response> {
-    let admins: StdResult<HashSet<_>> = msg.admins.into_iter().map(|addr| deps.api.addr_validate(&addr)).collect();
-    ADMINS.save(deps.storage, &admins?)?;
-    DONATION_DENOM.save(deps.storage, &msg.donation_denom)?;
-    Ok(Response::new())
-}
-
 // Modules
 mod exec {
     use std::collections::HashSet;
 
     use cosmwasm_std::{Event, BankMsg, coins};
+    use cw_storage_plus::Map;
     use cw_utils::*;
     use crate::error::ContractError;
 
@@ -45,10 +57,11 @@ mod exec {
     
 
     
-    pub fn denom(deps: DepsMut, info : MessageInfo) -> Result<Response, ContractError> {
-        let admins = ADMINS.load(deps.storage)?;
+    pub fn donate(deps: DepsMut, info : MessageInfo) -> Result<Response, ContractError> {
         let denom = DONATION_DENOM.load(deps.storage)?;
 
+        let admins : Result<Vec<_>, _>= ADMINS.keys(deps.storage, None, None, cosmwasm_std::Order::Ascending).collect();
+        let admins = admins?;
         let donation = must_pay(&info, &denom)?.u128();
         let donation_per_admin = donation / (admins.len() as u128);
         let res = donation % (admins.len() as u128);
@@ -60,13 +73,6 @@ mod exec {
             }).collect();
         messages.push(BankMsg::Send { to_address: info.sender.into_string(), amount: coins(res, &denom) });
         
-        
-
-        // let  messages  = admins.into_iter().map(|admin| BankMsg::Send 
-        //     {   to_address: admin.into_string(), 
-        //         amount: coins(donation_per_admin, &denom)
-        //     });
-        
         let resp = Response::new()
             .add_messages(messages.into_iter())
             .add_attribute("action", "donate")
@@ -76,48 +82,52 @@ mod exec {
         Ok(resp)
     }
 
-    pub fn add_members(deps: DepsMut, info: MessageInfo, admins: Vec<String>) -> Result<Response, ContractError>{
-        let mut current_admins = ADMINS.load(deps.storage)?;
-        if !current_admins.contains(&info.sender){
+    pub fn add_members(deps: DepsMut, env : Env, info: MessageInfo, admins: Vec<String>) -> Result<Response, ContractError>{
+        if !ADMINS.has(deps.storage, &info.sender){
             return Err(ContractError::Unauthorized{sender: info.sender})
         }
+
         let events = admins.iter().map(|admin| Event::new("admin_added").add_attribute("addr", admin));
         
-        let resp = Response::new().add_events(events).add_attribute("action", "add_members").add_attribute("added_count", admins.len().to_string());
+        let resp = Response::new().add_events(events)
+            .add_attribute("action", "add_members")
+            .add_attribute("added_count", admins.len().to_string());
         
-        let admins : StdResult<HashSet<_>>= admins.into_iter().map(|admin| deps.api.addr_validate(&admin)).collect();
-        let admins = admins.unwrap();
-        current_admins.extend(&mut admins.iter().cloned());
-        ADMINS.save(deps.storage, &current_admins)?;
+        for admin in admins {
+            let admin = deps.api.addr_validate(&admin)?;
+            ADMINS.save(deps.storage, &admin, &env.block.time)?;
+        }
 
         Ok(resp)
     }
     pub fn leave(deps: DepsMut, info: MessageInfo) -> StdResult<Response> {
-        ADMINS.update(deps.storage, move |admins| -> StdResult<_>{
-            let admins = admins.into_iter().filter(|admin| *admin != info.sender).collect();
-            Ok(admins)
-        })?;
+        let a = ADMINS.remove(deps.storage, &info.sender);
         Ok(Response::new())
     }
 }
 
 mod query{
+    use cosmwasm_std::Addr;
+
+    use crate::messages::JoinTimeResp;
+
     use super::*;
-    pub fn greet() -> StdResult<GreetResp> {
-        let resp = GreetResp{
-            message : "Hello world!".to_owned(),
-        };
-        Ok(resp)
-    }
     pub fn admin_list(deps: Deps)  -> StdResult<AdminsListResp>{
-        let admins = ADMINS.load(deps.storage)?;
-        Ok(AdminsListResp { admins: admins.into_iter().collect() })
+        let admins: Result<_, _> =  ADMINS.keys(deps.storage, None, None, cosmwasm_std::Order::Ascending).collect();
+        Ok(AdminsListResp { admins:admins?})
+    }
+    pub fn join_time(deps: Deps, admin : String) -> StdResult<JoinTimeResp> {
+        ADMINS
+            .load(deps.storage, &Addr::unchecked(admin))
+            .map(|joined| JoinTimeResp{joined})
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::vec;
+
+    use crate::messages::JoinTimeResp;
 
     use super::*;
     use cosmwasm_std::{from_binary, Addr, coins};
@@ -280,45 +290,6 @@ mod tests {
 
     }
     #[test]
-    fn greet_query1(){
-        let mut deps = mock_dependencies();
-        let env = mock_env();
-        
-        instantiate(
-            deps.as_mut(), 
-            env.clone(),
-            mock_info("sender", &[]),
-            InstantiateMsg { admins: vec![],  donation_denom: "eth".to_string() }).unwrap();
-        
-        let resp = query(
-            deps.as_ref(),
-            env.clone(),
-            QueryMsg::Greet { }).unwrap();
-        let resp: GreetResp = from_binary(&resp).unwrap();
-
-        assert_eq!(resp, GreetResp{message: "Hello world!".to_owned()})
-    }
-
-    #[test]
-    fn greet_query2(){
-        let mut app = App::default();
-        let code = ContractWrapper::new(execute,instantiate, query);
-        let code_id = app.store_code(Box::new(code));
-
-        let addr: Addr = app.instantiate_contract(
-            code_id, 
-            Addr::unchecked("owner"), 
-            &InstantiateMsg { admins : vec![], donation_denom: "eth".to_string()}, 
-            &[], 
-            "Contract", 
-            None,)
-            .unwrap();
-
-        let resp : GreetResp = app.wrap().query_wasm_smart(addr, &QueryMsg::Greet {  }).unwrap();
-        
-        assert_eq!(resp, GreetResp{message: "Hello world!".to_owned()})
-    }
-    #[test]
     fn instantiation(){
 
         let mut app = App::default();
@@ -340,6 +311,7 @@ mod tests {
 
         assert_eq!(resp, AdminsListResp{admins: vec![]});
         
+        let block = app.block_info();
 
         let addr = app.instantiate_contract(
             code_id,
@@ -348,10 +320,22 @@ mod tests {
               &[],
                "Contract 1",
                 None).unwrap();
-        let resp : AdminsListResp = app.wrap().query_wasm_smart(addr, &QueryMsg::AdminsList {  }).unwrap();
-        let resp : HashSet<Addr> = resp.admins.into_iter().collect();
 
-        assert_eq!(resp, vec![Addr::unchecked("admin2"), Addr::unchecked("admin1"),Addr::unchecked("admin3")].into_iter().collect())
+        let resp : AdminsListResp = app.wrap()
+            .query_wasm_smart(addr.clone(), &QueryMsg::AdminsList {})
+            .unwrap();
+
+        assert_eq!(
+            resp,
+            AdminsListResp {
+                admins: vec![Addr::unchecked("admin1"), Addr::unchecked("admin2"), Addr::unchecked("admin3")],
+            }
+        );
+
+        let resp_joined_time : JoinTimeResp = app.wrap()
+            .query_wasm_smart(addr, &QueryMsg::JoinTime { admin: "admin1".to_owned() })
+            .unwrap();
+        assert_eq!(block.time, resp_joined_time.joined)
 
     }
     #[test]
