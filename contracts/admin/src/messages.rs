@@ -31,4 +31,6 @@ pub enum QueryMsg {
     AdminsList {},
     #[returns(JoinTimeResp)]
     JoinTime { admin: String },
+    #[returns(AdminsListResp)]
+    AdminsAfterBlockTime { timestamp: Timestamp },
 }

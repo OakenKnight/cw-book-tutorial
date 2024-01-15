@@ -5,7 +5,7 @@ pub mod contract;
 pub mod messages;
 pub mod state;
 pub mod error;
-
+pub mod integration_tests;
 use error::ContractError;
 use messages::{QueryMsg, InstantiateMsg, ExecuteMsg};
 
